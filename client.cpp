@@ -78,7 +78,7 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
     char *cmd = strtok(buf, " ");
     // LOG("%s", cmd);
     if (begin_with(cmd, "connect") == 0) {
-        if (g_state == CONNECTED) {
+        if (g_state != CLOSED) {
             LOG("already connected");
             return;
         }
@@ -106,7 +106,7 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
         send_to_peer(peer_io->fd, &pc, "HELLO", 5);
 
     } else if (begin_with(cmd, "disconn") == 0) {
-        if (g_state != CONNECTED) {
+        if (g_state == CLOSED) {
             LOG("haven't connected to a server");
             return;
         }
