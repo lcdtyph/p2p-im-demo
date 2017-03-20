@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <ev.h>
+#include <algorithm>
 #include <list>
 #include "utils.h"
 
@@ -36,9 +37,10 @@ void start_server(const char *host, uint16_t port) {
         LOG("error on binding");
         return;
     }
+    LOG("Server start");
     setnonblocking(listen_fd);
     start_receive(listen_fd);
-
+    close(listen_fd);
 }
 
 void list_peers(int fd, struct peer_ctx *peer) {
@@ -109,3 +111,4 @@ void signal_cb(EV_P_ ev_signal *w, int revents) {
     LOG("Program terminated.");
     ev_break(EV_A_ EVBREAK_ALL);
 }
+

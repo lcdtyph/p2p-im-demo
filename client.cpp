@@ -124,7 +124,6 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
         mate_id = atoi(str_id);
         g_state = CHATTING;
         LOG("\nChatting with peer %d\n", mate_id);
-    //    chatting(peer_io->fd, mate_id);
     } else if (begin_with(cmd, "exit") == 0) {
         if (g_state != CLOSED) {
             send_to_peer(peer_io->fd, &pc, "BYE", 3);
