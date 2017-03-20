@@ -10,3 +10,5 @@ server:
 client:
 	c++ $(CXXFLAGS) $(LINKARGS) -o client client.cpp
 
+clean:
+	@rm client server
