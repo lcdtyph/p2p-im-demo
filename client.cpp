@@ -178,6 +178,7 @@ void peer_cb(EV_P_ ev_io *w, int revents) {
             goto __bad__;
         }
         LOG("Peer says: %s", header->data);
+        return;
     }
 
     switch (g_state) {

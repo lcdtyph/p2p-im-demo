@@ -72,7 +72,7 @@ int begin_with(const char *src, const char * key) {
 
 void send_to_peer(int fd, const struct sockaddr_in *peersock, const void *buf, ssize_t len) {
     int ret = sendto(fd, buf, len, 0, (const struct sockaddr *)peersock, sizeof(sockaddr_in));
-    if (ret < 0) LOG("%s", strerror(errno));
+    if (ret <= 0) LOG("%s", strerror(errno));
 //    else LOG("%d bytes sent", ret);
 }
 
