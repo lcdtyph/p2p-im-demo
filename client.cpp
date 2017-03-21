@@ -122,12 +122,12 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
     } else if (begin_with(cmd, "chat") == 0) {
         char *str_id = strtok(NULL, " ");
         if (!str_id) {
-            LOG("chat <id>");
+            LOG("chat <hex-id>");
             return;
         }
-        mate_id = std::stoul(str_id);
+        mate_id = std::stoul(str_id, nullptr, 16);
         g_state = CHATTING;
-        LOG("\nChatting with peer %u\n", mate_id);
+        LOG("\nChatting with peer %x\n", mate_id);
     } else if (begin_with(cmd, "exit") == 0) {
         if (g_state != CLOSED) {
             send_op(peer_io->fd, server, BYE);
@@ -155,74 +155,52 @@ void handle_list(const char *lst) {
     free(buf);
 }
 
-ssize_t recv_udp(int fd, void *dst, ssize_t expected_len, struct sockaddr *peer, socklen_t *len) {
-    ssize_t recv_len = 0;
-    ssize_t tmp_len = 0;
-
-    while (recv_len < expected_len) {
-        tmp_len = recvfrom(fd, dst, expected_len, 0, peer, len);
-        if (tmp_len < 0) {
-            LOG("error recv for %ld bytes", expected_len);
-            LOG("%s", strerror(errno));
-            return tmp_len;
-        }
-        recv_len += tmp_len;
-    }
-    return recv_len;
-}
-
 void peer_cb(EV_P_ ev_io *w, int revents) {
-    packet_hdr header;
-    char *buf = nullptr;
-    ssize_t recv_len = 0;
+    char buf[1500];
+    packet_hdr *header = reinterpret_cast<packet_hdr *>(&buf[0]);
     struct sockaddr_in peer;
     socklen_t len = sizeof peer;
 
     memset(&peer, 0, sizeof peer);
 
-    recv_len = recv_udp(w->fd, &header, sizeof header, (struct sockaddr *)&peer, &len);
+    recvfrom(w->fd, buf, sizeof buf, 0, (struct sockaddr *)&peer, &len);
+    buf[header->len] = 0;
 
-    if (header.len > recv_len) {
-        buf = new char[header.len + 1];
-        recv_udp(w->fd, buf, header.len - recv_len, (struct sockaddr *)&peer, &len);
-        buf[header.len] = 0;
-    }
-
-    if (header.opcode == PONG) {
+    if (header->opcode == PONG) {
     //    LOG("PONG received.");
         return;
     }
 
-    if (g_state == CHATTING && header.opcode == CHAT) {
-        if (begin_with(buf, ".bye") == 0) {
+    if (g_state == CHATTING && header->opcode == CHAT) {
+        if (begin_with(header->data, ".bye") == 0) {
             g_state = CONNECTED;
             LOG("Chat ends by peer");
             goto __bad__;
         }
-        LOG("Peer says: %s\n", buf);
+        LOG("Peer says: %s", header->data);
     }
 
     switch (g_state) {
     case WATING_FOR_WELCOME:
-        if (header.opcode == WELCOME) {
+        if (header->opcode == WELCOME) {
             LOG("Connected to server");
             g_state = CONNECTED;
-            server->id = header.peerid;
-            LOG("get id: %x", header.peerid);
+            server->id = header->peerid;
+            LOG("get id: %x", header->peerid);
             ev_timer_start(EV_A_ &server->timer);
         }
         break;
 
     case WATING_FOR_LIST:
-        if (header.opcode == LIST_PEERS) {
-            LOG("%s", buf);
-            handle_list(buf);
+        if (header->opcode == LIST_PEERS) {
+            LOG("%s", header->data);
+            handle_list(header->data);
             g_state = CONNECTED;
         }
         break;
 
     case WATING_FOR_BYE:
-        if (header.opcode == BYE) {
+        if (header->opcode == BYE) {
             LOG("Disconnected to server");
             ev_timer_stop(EV_A_ &server->timer);
             g_state = CLOSED;
@@ -230,11 +208,12 @@ void peer_cb(EV_P_ ev_io *w, int revents) {
         break;
 
     default:
+        LOG("connect to a server first.");
         break;
     }
 
 __bad__:
-    delete []buf;
+    return;
 }
 
 void pulse_cb(EV_P_ ev_timer *w, int revents) {

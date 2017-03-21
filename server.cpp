@@ -55,9 +55,9 @@ void list_peers(int fd, std::shared_ptr<peer_ctx> peer) {
 
     for (auto &p: g_peers) {
         char line[50];
-        inet_ntop(AF_INET, (struct sockaddr *) &p.second->peersock.sin_addr, line, sizeof(struct sockaddr_in));
+        inet_ntop(AF_INET, (struct sockaddr *) &p.second->peersock.sin_addr, ip, sizeof(struct sockaddr_in));
         port = ntohs(p.second->peersock.sin_port);
-        snprintf(line, sizeof line, "Peer %x %s:%d\n", peer->id, ip, port);
+        snprintf(line, sizeof line, "Peer %x %s:%d\n", p.second->id, ip, port);
         if (p.first == peer->id)
             buf += "[*]";
         buf += line;
@@ -89,7 +89,7 @@ void accept_cb(EV_P_ ev_io *w, int revents) {
     inet_ntop(AF_INET, &peer.sin_addr, ip, len);
     port = ntohs(peer.sin_port);
     
-    LOG("Received data: %s from %s:%d, opcode = %d\n", recv_buf, ip, port, phdr->opcode);
+//    LOG("Received data: %s from %s:%d, opcode = %d\n", recv_buf, ip, port, phdr->opcode);
     auto itr = g_peers.find(phdr->peerid);
     if (itr != g_peers.end() && itr->second->update(&peer))
         LOG("Peer %u updated to %s:%d", itr->first, ip, port);
