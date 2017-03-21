@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <ev.h>
-#include <list>
-#include <map>
+#include <unordered_map>
+#include <memory>
 #include "utils.h"
 
 enum states{
@@ -18,11 +18,12 @@ enum states{
     WATING_FOR_BYE
 }g_state;
 
-std::map<int, peer_ctx> g_peer;
-struct sockaddr_in server;
+std::unordered_map<uint32_t, std::shared_ptr<peer_ctx>> g_peers;
+std::shared_ptr<peer_ctx> server;
 
 void stdin_cb(EV_P_ ev_io *w, int revents);
 void peer_cb(EV_P_ ev_io *w, int revents);
+void pulse_cb(EV_P_ ev_timer *w, int revents);
 
 int main() {
     struct ev_loop *loop = EV_DEFAULT;
@@ -44,7 +45,7 @@ int main() {
     return 0;
 }
 
-void chatting(int fd, int id) {
+void chatting(int fd, uint32_t id) {
     char line[1024] = { 0 };
     ssize_t len;
     len = read(0, line, sizeof line);
@@ -52,18 +53,19 @@ void chatting(int fd, int id) {
         g_state = CONNECTED;
         LOG("Chatting end.");
     }
-    send_to_peer(fd, &g_peer[id], line, len);
+
+    packet_hdr *phdr = construct_packet(CHAT, id, line, len);
+    send_to_peer(fd, &g_peers[id]->peersock, phdr, phdr->len);
+    delete []phdr;
 }
 
 void stdin_cb(EV_P_ ev_io *w, int revents) {
     char buf[1024] = "";
     ssize_t buf_size = sizeof buf;
-    static struct peer_ctx pc;
-    static int mate_id;
+    static uint32_t mate_id;
     ev_io *peer_io = (ev_io *) w->data;
 
     if (g_state == CHATTING) {
-    //    LOG("chatting now");
         chatting(peer_io->fd, mate_id);
         return;
     }
@@ -82,15 +84,15 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
             LOG("already connected");
             return;
         }
-        memset(&server, 0, sizeof server);
-        server.sin_family = AF_INET;
+        server = std::make_shared<peer_ctx>();
+        memset(&server->peersock, 0, sizeof server->peersock);
+        server->peersock.sin_family = AF_INET;
         char *ip = strtok(NULL, " ");
         if (!ip) {
             LOG("connect <ip> <port>");
             return;
         }
-        inet_pton(AF_INET, ip, &server.sin_addr);
-        strcpy(pc.ip, ip);
+        inet_pton(AF_INET, ip, &server->peersock.sin_addr);
 
         char *str_port = strtok(NULL, " ");
         if (!str_port) {
@@ -98,12 +100,13 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
             return;
         }
         uint16_t port = atoi(str_port);
-        server.sin_port = htons(port);
-        pc.port = port;
+        server->peersock.sin_port = htons(port);
+        ev_timer_init(&server->timer, pulse_cb, 8., 8.);
+        server->timer.data = peer_io;
 
         LOG("connecting...");
         g_state = WATING_FOR_WELCOME;
-        send_to_peer(peer_io->fd, &pc, "HELLO", 5);
+        send_op(peer_io->fd, server, HELLO);
 
     } else if (begin_with(cmd, "disconn") == 0) {
         if (g_state == CLOSED) {
@@ -111,22 +114,22 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
             return;
         }
         g_state = WATING_FOR_BYE;
-        send_to_peer(peer_io->fd, &pc, "BYE", 3);
+        send_op(peer_io->fd, server, BYE);
     } else if (begin_with(cmd, "list") == 0) {
         g_state = WATING_FOR_LIST;
-        send_to_peer(peer_io->fd, &pc, "LIST_PEERS", 10);
+        send_op(peer_io->fd, server, LIST_PEERS);
     } else if (begin_with(cmd, "chat") == 0) {
         char *str_id = strtok(NULL, " ");
         if (!str_id) {
             LOG("chat <id>");
             return;
         }
-        mate_id = atoi(str_id);
+        mate_id = std::stoul(str_id);
         g_state = CHATTING;
-        LOG("\nChatting with peer %d\n", mate_id);
+        LOG("\nChatting with peer %u\n", mate_id);
     } else if (begin_with(cmd, "exit") == 0) {
         if (g_state != CLOSED) {
-            send_to_peer(peer_io->fd, &pc, "BYE", 3);
+            send_op(peer_io->fd, server, BYE);
         }
         ev_break(EV_A_ EVBREAK_ALL);
         return;
@@ -135,65 +138,104 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
 }
 
 void handle_list(const char *lst) {
-    char *buf = strdup(lst + 5);
-    peer_ctx pc;
+    char *buf = strdup(lst);
+    auto pc = std::make_shared<peer_ctx>();
+    char ip[30];
+    uint16_t port;
     char *line = strtok(buf, "\n");
     while (line) {
         if (begin_with(line, "[*]") != 0) {
-            sscanf(line, "Peer %d %[^:]:%hu", &pc.id, pc.ip, &pc.port);
-            g_peer[pc.id] = pc;
+            sscanf(line, "Peer %u %[^:]:%hu", &pc->id, ip, &port);
+            pc->peersock.sin_port = htons(port);
+            g_peers[pc->id] = pc;
         }
         line = strtok(NULL, "\n");
     }
     free(buf);
 }
 
+ssize_t recv_udp(int fd, void *dst, ssize_t expected_len, struct sockaddr *peer, socklen_t *len) {
+    ssize_t recv_len = 0;
+    ssize_t tmp_len = 0;
+
+    while (recv_len < expected_len) {
+        tmp_len = recvfrom(fd, dst, expected_len, 0, peer, len);
+        if (tmp_len < 0) {
+            LOG("error recv");
+            return tmp_len;
+        }
+        recv_len += tmp_len;
+    }
+    return recv_len;
+}
+
 void peer_cb(EV_P_ ev_io *w, int revents) {
-    char buf[1024] = "";
-    ssize_t recv_len = sizeof buf;
+    packet_hdr header;
+    char *buf = nullptr;
+    ssize_t recv_len = 0;
     struct sockaddr_in peer;
     socklen_t len = sizeof peer;
 
     memset(&peer, 0, sizeof peer);
-    recv_len = recvfrom(w->fd, buf, recv_len, 0, (struct sockaddr *)&peer, &len);
 
-    if (recv_len == -1) {
-        LOG("error");
+    recv_len = recv_udp(w->fd, &header, sizeof header, (struct sockaddr *)&peer, &len);
+
+    if (header.len) {
+        buf = new char[header.len + 1];
+        recv_udp(w->fd, buf, header.len, (struct sockaddr *)&peer, &len);
+        buf[header.len] = 0;
+    }
+
+    if (header.opcode == PONG) {
+        LOG("PONG received.");
         return;
     }
 
     if (g_state == CHATTING) {
-        if (begin_with(buf, ".bye") == 0) {
+        if (header.opcode == CHAT && begin_with(buf, ".bye") == 0) {
             g_state = CONNECTED;
             LOG("Chat ends by peer");
-            return;
+            goto __bad__;
         }
         LOG("Peer says: %s\n", buf);
     }
 
-    // if (memcmp(&peer, &server, sizeof server)) return;
     switch (g_state) {
     case WATING_FOR_WELCOME:
-        if (begin_with(buf, "WELCOME") == 0) {
+        if (header.opcode == WELCOME) {
             LOG("Connected to server");
             g_state = CONNECTED;
+            ev_timer_start(EV_A_ &server->timer);
         }
         break;
+
     case WATING_FOR_LIST:
-        if (begin_with(buf, "LIST") == 0) {
+        if (header.opcode == LIST_PEERS) {
             LOG("%s", buf);
             handle_list(buf);
             g_state = CONNECTED;
         }
         break;
+
     case WATING_FOR_BYE:
-        if (begin_with(buf, "BYE") == 0) {
+        if (header.opcode == BYE) {
             LOG("Disconnected to server");
+            ev_timer_stop(EV_A_ &server->timer);
             g_state = CLOSED;
         }
         break;
+
     default:
         break;
     }
+
+__bad__:
+    delete []buf;
 }
 
+void pulse_cb(EV_P_ ev_timer *w, int revents) {
+    peer_ctx *serv = (peer_ctx *)w;
+    ev_io *peer_io = (ev_io *)w->data;
+    if (server.get() == serv)
+        send_op(peer_io->fd, server, PING);
+}
