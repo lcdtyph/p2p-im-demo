@@ -56,7 +56,7 @@ void chatting(int fd, uint32_t id) {
 
     packet_hdr *phdr = construct_packet(CHAT, id, line, len);
     send_to_peer(fd, &g_peers[id]->peersock, phdr, phdr->len);
-    delete []phdr;
+    destroy_packet(phdr);
 }
 
 void stdin_cb(EV_P_ ev_io *w, int revents) {
@@ -80,19 +80,19 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
     char *cmd = strtok(buf, " ");
     // LOG("%s", cmd);
     if (begin_with(cmd, "connect") == 0) {
-        if (g_state != CLOSED) {
+        if (g_state != CLOSED && g_state != WATING_FOR_WELCOME) {
             LOG("already connected");
             return;
         }
         server = std::make_shared<peer_ctx>();
-        memset(&server->peersock, 0, sizeof server->peersock);
+        memset(&server->peersock, 0, sizeof(struct sockaddr_in));
         server->peersock.sin_family = AF_INET;
         char *ip = strtok(NULL, " ");
         if (!ip) {
             LOG("connect <ip> <port>");
             return;
         }
-        inet_pton(AF_INET, ip, &server->peersock.sin_addr);
+        if (inet_pton(AF_INET, ip, &(server->peersock.sin_addr)) <= 0) LOG("%s", strerror(errno));
 
         char *str_port = strtok(NULL, " ");
         if (!str_port) {
@@ -103,8 +103,9 @@ void stdin_cb(EV_P_ ev_io *w, int revents) {
         server->peersock.sin_port = htons(port);
         ev_timer_init(&server->timer, pulse_cb, 8., 8.);
         server->timer.data = peer_io;
+        server->id = 0;
 
-        LOG("connecting...");
+        LOG("connecting to %s:%d ...", ip, port);
         g_state = WATING_FOR_WELCOME;
         send_op(peer_io->fd, server, HELLO);
 
@@ -145,7 +146,7 @@ void handle_list(const char *lst) {
     char *line = strtok(buf, "\n");
     while (line) {
         if (begin_with(line, "[*]") != 0) {
-            sscanf(line, "Peer %u %[^:]:%hu", &pc->id, ip, &port);
+            sscanf(line, "Peer %x %[^:]:%hu", &pc->id, ip, &port);
             pc->peersock.sin_port = htons(port);
             g_peers[pc->id] = pc;
         }
@@ -161,7 +162,8 @@ ssize_t recv_udp(int fd, void *dst, ssize_t expected_len, struct sockaddr *peer,
     while (recv_len < expected_len) {
         tmp_len = recvfrom(fd, dst, expected_len, 0, peer, len);
         if (tmp_len < 0) {
-            LOG("error recv");
+            LOG("error recv for %ld bytes", expected_len);
+            LOG("%s", strerror(errno));
             return tmp_len;
         }
         recv_len += tmp_len;
@@ -180,19 +182,19 @@ void peer_cb(EV_P_ ev_io *w, int revents) {
 
     recv_len = recv_udp(w->fd, &header, sizeof header, (struct sockaddr *)&peer, &len);
 
-    if (header.len) {
+    if (header.len > recv_len) {
         buf = new char[header.len + 1];
-        recv_udp(w->fd, buf, header.len, (struct sockaddr *)&peer, &len);
+        recv_udp(w->fd, buf, header.len - recv_len, (struct sockaddr *)&peer, &len);
         buf[header.len] = 0;
     }
 
     if (header.opcode == PONG) {
-        LOG("PONG received.");
+    //    LOG("PONG received.");
         return;
     }
 
-    if (g_state == CHATTING) {
-        if (header.opcode == CHAT && begin_with(buf, ".bye") == 0) {
+    if (g_state == CHATTING && header.opcode == CHAT) {
+        if (begin_with(buf, ".bye") == 0) {
             g_state = CONNECTED;
             LOG("Chat ends by peer");
             goto __bad__;
@@ -205,6 +207,8 @@ void peer_cb(EV_P_ ev_io *w, int revents) {
         if (header.opcode == WELCOME) {
             LOG("Connected to server");
             g_state = CONNECTED;
+            server->id = header.peerid;
+            LOG("get id: %x", header.peerid);
             ev_timer_start(EV_A_ &server->timer);
         }
         break;

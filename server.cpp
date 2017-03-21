@@ -55,9 +55,9 @@ void list_peers(int fd, std::shared_ptr<peer_ctx> peer) {
 
     for (auto &p: g_peers) {
         char line[50];
-        inet_ntop(AF_INET, (struct sockaddr *) &p.second->peersock, line, sizeof(struct sockaddr_in));
+        inet_ntop(AF_INET, (struct sockaddr *) &p.second->peersock.sin_addr, line, sizeof(struct sockaddr_in));
         port = ntohs(p.second->peersock.sin_port);
-        snprintf(line, sizeof line, "Peer %d %s:%d\n", peer->id, ip, port);
+        snprintf(line, sizeof line, "Peer %x %s:%d\n", peer->id, ip, port);
         if (p.first == peer->id)
             buf += "[*]";
         buf += line;
@@ -86,10 +86,10 @@ void accept_cb(EV_P_ ev_io *w, int revents) {
     }
 
     phdr = (struct packet_hdr *)&recv_buf[0];
-    inet_ntop(AF_INET, &peer, ip, len);
+    inet_ntop(AF_INET, &peer.sin_addr, ip, len);
     port = ntohs(peer.sin_port);
     
-    LOG("Received data: %s from %s:%d\n", recv_buf, ip, port);
+    LOG("Received data: %s from %s:%d, opcode = %d\n", recv_buf, ip, port, phdr->opcode);
     auto itr = g_peers.find(phdr->peerid);
     if (itr != g_peers.end() && itr->second->update(&peer))
         LOG("Peer %u updated to %s:%d", itr->first, ip, port);
@@ -100,7 +100,7 @@ void accept_cb(EV_P_ ev_io *w, int revents) {
             auto new_peer = std::make_shared<struct peer_ctx>();
             peersetup(new_peer, &peer);
             g_peers[new_peer->id] = new_peer;
-            LOG("NEW PEER: %s:%d connected", ip, port);
+            LOG("NEW PEER: %s:%d connected assign id = %x", ip, port, new_peer->id);
             itr = g_peers.find(new_peer->id);
             ev_timer_start(EV_A_ &new_peer->timer);
         }
@@ -108,7 +108,8 @@ void accept_cb(EV_P_ ev_io *w, int revents) {
         break;
 
     case BYE:
-        LOG("PEER: %s:%d disconnected", ip, port);
+        ev_timer_stop(EV_A_ &itr->second->timer);
+        LOG("PEER: %x %s:%d disconnected", phdr->peerid, ip, port);
         send_op(w->fd, itr->second, BYE);
         g_peers.erase(itr);
         break;
@@ -153,15 +154,16 @@ void signal_cb(EV_P_ ev_signal *w, int revents) {
 
 void pulse_timeout_cb(EV_P_ struct ev_timer *w, int revents) {
     struct peer_ctx *peer = reinterpret_cast<peer_ctx *>(w->data);
-    LOG("Peer %u timeout.", peer->id);
-    ev_timer_stop(EV_A_ w);
+    ev_timer_stop(EV_A_ &peer->timer);
+    LOG("Peer %x timeout.", peer->id);
     g_peers.erase(g_peers.find(peer->id));
 }
 
 void peersetup(std::shared_ptr<struct peer_ctx> peer, const struct sockaddr_in *peersock) {
     memcpy(&peer->peersock, peersock, sizeof(struct sockaddr_in));
-    ev_timer_init(&peer->timer, pulse_timeout_cb, 0., 10.);
+    ev_timer_init(&peer->timer, pulse_timeout_cb, 10., 10.);
     do {
         peer->id = genid();
     } while(g_peers.count(peer->id));
+    peer->timer.data = peer.get();
 }
