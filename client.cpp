@@ -148,6 +148,7 @@ void handle_list(const char *lst) {
         if (begin_with(line, "[*]") != 0) {
             sscanf(line, "Peer %x %[^:]:%hu", &pc->id, ip, &port);
             pc->peersock.sin_port = htons(port);
+            inet_pton(AF_INET, ip, (struct sockaddr *)&pc->peersock.sin_addr);
             g_peers[pc->id] = pc;
         }
         line = strtok(NULL, "\n");
